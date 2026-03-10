@@ -1,10 +1,8 @@
-import React, { useState } from 'react';
-import { View, StyleSheet, Dimensions, Text, Platform, Modal, StatusBar } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import { View, StyleSheet, Text, Platform, Modal, StatusBar, useWindowDimensions } from 'react-native';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { NativeVideoPlayer } from './NativeVideoPlayer';
-import type { PlayUrlResponse } from '../services/types';
-
-const { width } = Dimensions.get('window');
-const VIDEO_HEIGHT = width * 0.5625;
+import type { PlayUrlResponse, DanmakuItem } from '../services/types';
 
 interface Props {
   playData: PlayUrlResponse | null;
@@ -14,14 +12,38 @@ interface Props {
   onMiniPlayer?: () => void;
   bvid?: string;
   cid?: number;
+  danmakus?: DanmakuItem[];
+  onTimeUpdate?: (t: number) => void;
 }
 
-export function VideoPlayer({ playData, qualities, currentQn, onQualityChange, onMiniPlayer, bvid, cid }: Props) {
+export function VideoPlayer({ playData, qualities, currentQn, onQualityChange, onMiniPlayer, bvid, cid, danmakus, onTimeUpdate }: Props) {
   const [fullscreen, setFullscreen] = useState(false);
+  const { width } = useWindowDimensions();
+  const VIDEO_HEIGHT = width * 0.5625;
+  const lastTimeRef = useRef(0);
+
+  const handleEnterFullscreen = async () => {
+    setFullscreen(true);
+    if (Platform.OS !== 'web')
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT);
+  };
+
+  const handleExitFullscreen = async () => {
+    setFullscreen(false);
+    if (Platform.OS !== 'web')
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (Platform.OS !== 'web')
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    };
+  }, []);
 
   if (!playData) {
     return (
-      <View style={[styles.container, styles.placeholder]}>
+      <View style={[{ width, height: VIDEO_HEIGHT, backgroundColor: '#000' }, styles.placeholder]}>
         <Text style={styles.placeholderText}>视频加载中...</Text>
       </View>
     );
@@ -30,7 +52,7 @@ export function VideoPlayer({ playData, qualities, currentQn, onQualityChange, o
   if (Platform.OS === 'web') {
     const url = playData.durl?.[0]?.url ?? '';
     return (
-      <View style={styles.container}>
+      <View style={{ width, height: VIDEO_HEIGHT, backgroundColor: '#000' }}>
         <video
           src={url}
           style={{ width: '100%', height: '100%', backgroundColor: '#000' } as any}
@@ -43,29 +65,37 @@ export function VideoPlayer({ playData, qualities, currentQn, onQualityChange, o
 
   return (
     <>
-      <NativeVideoPlayer
-        playData={playData}
-        qualities={qualities}
-        currentQn={currentQn}
-        onQualityChange={onQualityChange}
-        onFullscreen={() => setFullscreen(true)}
-        onMiniPlayer={onMiniPlayer}
-        bvid={bvid}
-        cid={cid}
-      />
+      {/* Portrait player: unmount when fullscreen */}
+      {!fullscreen && (
+        <NativeVideoPlayer
+          playData={playData}
+          qualities={qualities}
+          currentQn={currentQn}
+          onQualityChange={onQualityChange}
+          onFullscreen={handleEnterFullscreen}
+          onMiniPlayer={onMiniPlayer}
+          bvid={bvid}
+          cid={cid}
+          isFullscreen={false}
+          onTimeUpdate={(t) => { lastTimeRef.current = t; onTimeUpdate?.(t); }}
+        />
+      )}
 
       <Modal visible={fullscreen} animationType="fade" statusBarTranslucent>
         <StatusBar hidden />
-        <View style={styles.fullscreenContainer}>
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
           <NativeVideoPlayer
             playData={playData}
             qualities={qualities}
             currentQn={currentQn}
             onQualityChange={onQualityChange}
-            onFullscreen={() => setFullscreen(false)}
+            onFullscreen={handleExitFullscreen}
             bvid={bvid}
             cid={cid}
-            style={{ width: '100%', height: '100%' } as any}
+            danmakus={danmakus}
+            isFullscreen={true}
+            initialTime={lastTimeRef.current}
+            onTimeUpdate={(t) => { lastTimeRef.current = t; onTimeUpdate?.(t); }}
           />
         </View>
       </Modal>
@@ -74,8 +104,6 @@ export function VideoPlayer({ playData, qualities, currentQn, onQualityChange, o
 }
 
 const styles = StyleSheet.create({
-  container: { width, height: VIDEO_HEIGHT, backgroundColor: '#000' },
   placeholder: { justifyContent: 'center', alignItems: 'center' },
   placeholderText: { color: '#fff', fontSize: 14 },
-  fullscreenContainer: { flex: 1, backgroundColor: '#000' },
 });
