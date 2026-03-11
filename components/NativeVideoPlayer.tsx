@@ -11,11 +11,16 @@ import { buildDashMpdUri } from '../utils/dash';
 import { getHeatmap, getVideoShot } from '../services/bilibili';
 
 const { width: SCREEN_W } = Dimensions.get('window');
+//  16:9 视频区域高度，适配不同屏幕宽度
 const VIDEO_H = SCREEN_W * 0.5625;
 const BAR_H = 3;
+// 进度球尺寸
 const BALL = 12;
+// 活跃状态下的拖动球增大尺寸，提升触控体验
 const BALL_ACTIVE = 16;
+// 进度条分段数，越大热力图越精细但性能越差
 const SEGMENTS = 100;
+// 热力图颜色从蓝（冷）到红（热）
 const HIDE_DELAY = 3000;
 
 const HEADERS = {
@@ -56,6 +61,41 @@ function decodeFloats(base64: string): number[] {
     } else break;
   }
   return floats;
+}
+
+function decodePvData(base64: string): number[] {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const view = new DataView(bytes.buffer);
+  const timestamps: number[] = [];
+  let i = 0;
+  while (i < bytes.length) {
+    const tag = bytes[i++];
+    const wt = tag & 0x7;
+    if (wt === 5) { timestamps.push(view.getFloat32(i, true)); i += 4; }
+    else if (wt === 2) {
+      // Packed floats — read length prefix then extract each float32
+      let len = 0, shift = 0;
+      do { const b = bytes[i++]; len |= (b & 0x7f) << shift; shift += 7; if (!(b & 0x80)) break; } while (true);
+      const end = i + len;
+      while (i < end) { timestamps.push(view.getFloat32(i, true)); i += 4; }
+    }
+    else if (wt === 0) { while (i < bytes.length && (bytes[i++] & 0x80)); }
+    else if (wt === 1) { i += 8; }
+    else break;
+  }
+  return timestamps;
+}
+
+function findFrameIdx(timestamps: number[], seekTime: number): number {
+  if (!timestamps.length) return 0;
+  let lo = 0, hi = timestamps.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (timestamps[mid] <= seekTime) lo = mid; else hi = mid - 1;
+  }
+  return lo;
 }
 
 function downsample(data: number[], n: number): number[] {
@@ -108,6 +148,7 @@ export function NativeVideoPlayer({
 
   const [heatSegments, setHeatSegments] = useState<number[]>([]);
   const [shots, setShots] = useState<VideoShotData | null>(null);
+  const [shotTimestamps, setShotTimestamps] = useState<number[]>([]);
 
   const videoRef = useRef<VideoRef>(null);
   const currentDesc = qualities.find(q => q.qn === currentQn)?.desc ?? String(currentQn || 'HD');
@@ -134,7 +175,13 @@ export function NativeVideoPlayer({
         try { setHeatSegments(downsample(decodeFloats(heatmap.pb_data), SEGMENTS)); }
         catch { setHeatSegments([]); }
       }
-      if (shotData?.image?.length) setShots(shotData);
+      if (shotData?.image?.length) {
+        setShots(shotData);
+        if (shotData.pvdata) {
+          try { setShotTimestamps(decodePvData(shotData.pvdata)); }
+          catch { setShotTimestamps([]); }
+        }
+      }
     });
     return () => { cancelled = true; };
   }, [bvid, cid]);
@@ -212,160 +259,179 @@ export function NativeVideoPlayer({
   const touchRatio = touchX !== null ? clamp(touchX / barWidthRef.current, 0, 1) : null;
   const progressRatio = duration > 0 ? clamp(currentTime / duration, 0, 1) : 0;
 
+  const THUMB_DISPLAY_W = 120; // scaled display width
+
   const renderThumbnail = () => {
-    if (touchRatio === null || !shots) return null;
+    if (touchRatio === null || !shots || !isSeeking) return null;
     const { img_x_size: TW, img_y_size: TH, img_x_len, img_y_len, image } = shots;
-    const totalFrames = img_x_len * img_y_len * image.length;
     const framesPerSheet = img_x_len * img_y_len;
-    const frameIdx = Math.floor(touchRatio * (totalFrames - 1));
+    const totalFrames = framesPerSheet * image.length;
+
+    // Use pvdata timestamps for accurate frame lookup; fall back to linear interpolation
+    const seekTime = touchRatio * duration;
+    const frameIdx = shotTimestamps.length > 0
+      ? findFrameIdx(shotTimestamps, seekTime)
+      : Math.floor(touchRatio * (totalFrames - 1));
+
     const sheetIdx = Math.floor(frameIdx / framesPerSheet);
     const local = frameIdx % framesPerSheet;
     const col = local % img_x_len;
     const row = Math.floor(local / img_x_len);
-    const left = clamp((touchX ?? 0) - TW / 2, 0, barWidthRef.current - TW);
+
+    // Scale sprite frame to display size
+    const scale = THUMB_DISPLAY_W / TW;
+    const DW = THUMB_DISPLAY_W;
+    const DH = Math.round(TH * scale);
+
+    const trackLeft = barOffsetX.current;
+    const absLeft = clamp(trackLeft + (touchX ?? 0) - DW / 2, 0, SCREEN_W - DW);
+
+    // Protocol-relative URLs from B站 API need explicit https:
+    const sheetUrl = image[sheetIdx].startsWith('//') ? `https:${image[sheetIdx]}` : image[sheetIdx];
     return (
-      <View style={[styles.thumbPreview, { left, width: TW }]}>
-        <View style={{ width: TW, height: TH, overflow: 'hidden', borderRadius: 4 }}>
+      <View style={[styles.thumbPreview, { left: absLeft, width: DW }]} pointerEvents="none">
+        <View style={{ width: DW, height: DH, overflow: 'hidden', borderRadius: 4 }}>
           <Image
-            source={{ uri: image[sheetIdx] }}
+            source={{ uri: sheetUrl, headers: HEADERS }}
             style={{
               position: 'absolute',
-              width: TW * img_x_len,
-              height: TH * img_y_len,
-              left: -col * TW,
-              top: -row * TH,
+              width: TW * img_x_len * scale,
+              height: TH * img_y_len * scale,
+              left: -col * DW,
+              top: -row * DH,
             }}
           />
         </View>
-        <Text style={styles.thumbTime}>{formatTime((touchRatio ?? 0) * duration)}</Text>
+        <Text style={styles.thumbTime}>{formatTime(seekTime)}</Text>
       </View>
     );
   };
 
   return (
-    <TouchableWithoutFeedback onPress={handleTap}>
-      <View style={[styles.container, style]}>
-        {resolvedUrl ? (
-          <Video
-            key={resolvedUrl}
-            ref={videoRef}
-            source={isDash
-              ? { uri: resolvedUrl, type: 'mpd', headers: HEADERS }
-              : { uri: resolvedUrl, headers: HEADERS }
-            }
-            style={StyleSheet.absoluteFill}
-            resizeMode="contain"
-            controls={false}
-            paused={paused}
-            onProgress={({ currentTime: ct, seekableDuration: dur }) => {
-              setCurrentTime(ct);
-              if (dur > 0) setDuration(dur);
-            }}
-          />
-        ) : (
-          <View style={styles.placeholder} />
-        )}
+    <View style={[styles.container, style]}>
+      {resolvedUrl ? (
+        <Video
+          key={resolvedUrl}
+          ref={videoRef}
+          source={isDash
+            ? { uri: resolvedUrl, type: 'mpd', headers: HEADERS }
+            : { uri: resolvedUrl, headers: HEADERS }
+          }
+          style={StyleSheet.absoluteFill}
+          resizeMode="contain"
+          controls={false}
+          paused={paused}
+          onProgress={({ currentTime: ct, seekableDuration: dur }) => {
+            setCurrentTime(ct);
+            if (dur > 0) setDuration(dur);
+          }}
+        />
+      ) : (
+        <View style={styles.placeholder} />
+      )}
 
-        {showControls && (
-          <>
-            {/* Top bar */}
-            <LinearGradient
-              colors={['rgba(0,0,0,0.55)', 'transparent']}
-              style={styles.topBar}
-              pointerEvents="box-none"
-            >
-              {onMiniPlayer && (
-                <TouchableOpacity onPress={onMiniPlayer} style={styles.topBtn}>
-                  <Ionicons name="tablet-portrait-outline" size={20} color="#fff" />
-                </TouchableOpacity>
-              )}
-            </LinearGradient>
+      {/* Permanent transparent tap layer — always above Video so taps always reach it */}
+      <TouchableWithoutFeedback onPress={handleTap}>
+        <View style={StyleSheet.absoluteFill} />
+      </TouchableWithoutFeedback>
 
-            {/* Center play/pause */}
-            <TouchableOpacity style={styles.centerBtn} onPress={() => { setPaused(p => !p); showAndReset(); }}>
-              <View style={styles.centerBtnBg}>
-                <Ionicons name={paused ? 'play' : 'pause'} size={28} color="#fff" />
-              </View>
-            </TouchableOpacity>
+      {showControls && (
+        <>
+          {/* Top bar */}
+          <LinearGradient
+            colors={['rgba(0,0,0,0.55)', 'transparent']}
+            style={styles.topBar}
+            pointerEvents="box-none"
+          >
+            {onMiniPlayer && (
+              <TouchableOpacity onPress={onMiniPlayer} style={styles.topBtn}>
+                <Ionicons name="tablet-portrait-outline" size={20} color="#fff" />
+              </TouchableOpacity>
+            )}
+          </LinearGradient>
 
-            {/* Bottom bar */}
-            <LinearGradient
-              colors={['transparent', 'rgba(0,0,0,0.7)']}
-              style={styles.bottomBar}
-              pointerEvents="box-none"
-            >
-              {/* Thumbnail area */}
-              <View style={styles.thumbArea} pointerEvents="none">
-                {renderThumbnail()}
-              </View>
-
-              {/* Progress track */}
-              <View
-                ref={trackRef}
-                style={styles.trackWrapper}
-                onLayout={measureTrack}
-                {...panResponder.panHandlers}
-              >
-                <View style={styles.track}>
-                  {heatSegments.length > 0
-                    ? heatSegments.map((v, i) => (
-                        <View
-                          key={i}
-                          style={[styles.seg, { backgroundColor: heatColor(v), width: `${100 / SEGMENTS}%` as any }]}
-                        />
-                      ))
-                    : <View style={[styles.seg, { flex: 1, backgroundColor: '#00AEEC' }]} />
-                  }
-                  <View style={[styles.playedOverlay, { width: `${progressRatio * 100}%` as any }]} />
-                </View>
-                {isSeeking && touchX !== null ? (
-                  <View style={[styles.ball, styles.ballActive, { left: touchX - BALL_ACTIVE / 2 }]} />
-                ) : (
-                  <View style={[styles.ball, { left: progressRatio * barWidthRef.current - BALL / 2 }]} />
-                )}
-              </View>
-
-              {/* Controls row */}
-              <View style={styles.ctrlRow}>
-                <TouchableOpacity onPress={() => { setPaused(p => !p); showAndReset(); }} style={styles.ctrlBtn}>
-                  <Ionicons name={paused ? 'play' : 'pause'} size={16} color="#fff" />
-                </TouchableOpacity>
-                <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
-                <View style={{ flex: 1 }} />
-                <Text style={styles.timeText}>{formatTime(duration)}</Text>
-                <TouchableOpacity style={styles.ctrlBtn} onPress={() => setShowQuality(true)}>
-                  <Text style={styles.qualityText}>{currentDesc}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.ctrlBtn} onPress={onFullscreen}>
-                  <Ionicons name="expand" size={16} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            </LinearGradient>
-          </>
-        )}
-
-        {/* Quality modal */}
-        <Modal visible={showQuality} transparent animationType="fade">
-          <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowQuality(false)}>
-            <View style={styles.qualityList}>
-              <Text style={styles.qualityTitle}>选择清晰度</Text>
-              {qualities.map(q => (
-                <TouchableOpacity
-                  key={q.qn}
-                  style={styles.qualityItem}
-                  onPress={() => { setShowQuality(false); onQualityChange(q.qn); showAndReset(); }}
-                >
-                  <Text style={[styles.qualityItemText, q.qn === currentQn && styles.qualityItemActive]}>
-                    {q.desc}
-                  </Text>
-                  {q.qn === currentQn && <Ionicons name="checkmark" size={16} color="#00AEEC" />}
-                </TouchableOpacity>
-              ))}
+          {/* Center play/pause */}
+          <TouchableOpacity style={styles.centerBtn} onPress={() => { setPaused(p => !p); showAndReset(); }}>
+            <View style={styles.centerBtnBg}>
+              <Ionicons name={paused ? 'play' : 'pause'} size={28} color="#fff" />
             </View>
           </TouchableOpacity>
-        </Modal>
-      </View>
-    </TouchableWithoutFeedback>
+
+          {/* Bottom bar */}
+          <LinearGradient
+            colors={['transparent', 'rgba(0,0,0,0.7)']}
+            style={styles.bottomBar}
+            pointerEvents="box-none"
+          >
+            {/* Progress track */}
+            <View
+              ref={trackRef}
+              style={styles.trackWrapper}
+              onLayout={measureTrack}
+              {...panResponder.panHandlers}
+            >
+              <View style={styles.track}>
+                {heatSegments.length > 0
+                  ? heatSegments.map((v, i) => (
+                      <View
+                        key={i}
+                        style={[styles.seg, { backgroundColor: heatColor(v), width: `${100 / SEGMENTS}%` as any }]}
+                      />
+                    ))
+                  : <View style={[styles.seg, { flex: 1, backgroundColor: '#00AEEC' }]} />
+                }
+                <View style={[styles.playedOverlay, { width: `${progressRatio * 100}%` as any }]} />
+              </View>
+              {isSeeking && touchX !== null ? (
+                <View style={[styles.ball, styles.ballActive, { left: touchX - BALL_ACTIVE / 2 }]} />
+              ) : (
+                <View style={[styles.ball, { left: progressRatio * barWidthRef.current - BALL / 2 }]} />
+              )}
+            </View>
+
+            {/* Controls row */}
+            <View style={styles.ctrlRow}>
+              <TouchableOpacity onPress={() => { setPaused(p => !p); showAndReset(); }} style={styles.ctrlBtn}>
+                <Ionicons name={paused ? 'play' : 'pause'} size={16} color="#fff" />
+              </TouchableOpacity>
+              <Text style={styles.timeText}>{formatTime(currentTime)}</Text>
+              <View style={{ flex: 1 }} />
+              <Text style={styles.timeText}>{formatTime(duration)}</Text>
+              <TouchableOpacity style={styles.ctrlBtn} onPress={() => setShowQuality(true)}>
+                <Text style={styles.qualityText}>{currentDesc}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.ctrlBtn} onPress={onFullscreen}>
+                <Ionicons name="expand" size={16} color="#fff" />
+              </TouchableOpacity>
+            </View>
+          </LinearGradient>
+        </>
+      )}
+
+      {/* Thumbnail preview — absolute on container to avoid clipping */}
+      {renderThumbnail()}
+
+      {/* Quality modal */}
+      <Modal visible={showQuality} transparent animationType="fade">
+        <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowQuality(false)}>
+          <View style={styles.qualityList}>
+            <Text style={styles.qualityTitle}>选择清晰度</Text>
+            {qualities.map(q => (
+              <TouchableOpacity
+                key={q.qn}
+                style={styles.qualityItem}
+                onPress={() => { setShowQuality(false); onQualityChange(q.qn); showAndReset(); }}
+              >
+                <Text style={[styles.qualityItemText, q.qn === currentQn && styles.qualityItemActive]}>
+                  {q.desc}
+                </Text>
+                {q.qn === currentQn && <Ionicons name="checkmark" size={16} color="#00AEEC" />}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+    </View>
   );
 }
 
@@ -391,8 +457,7 @@ const styles = StyleSheet.create({
     position: 'absolute', bottom: 0, left: 0, right: 0,
     paddingBottom: 8, paddingTop: 32,
   },
-  thumbArea: { position: 'relative', height: 80, marginHorizontal: 8 },
-  thumbPreview: { position: 'absolute', bottom: 4, alignItems: 'center' },
+  thumbPreview: { position: 'absolute', bottom: 64, alignItems: 'center' },
   thumbTime: {
     color: '#fff', fontSize: 11, fontWeight: '600', marginTop: 2,
     textShadowColor: 'rgba(0,0,0,0.7)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2,

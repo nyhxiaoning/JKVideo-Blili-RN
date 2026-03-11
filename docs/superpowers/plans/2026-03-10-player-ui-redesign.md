@@ -623,3 +623,5 @@ git commit -m "feat: unified player controls with heatmap progress bar and thumb
 - [ ] 拖拽进度条时显示缩略图预览（需要视频有截图数据）
 - [ ] 切换清晰度正常工作
 - [ ] 播放器下方无独立的 HeatProgressBar
+
+
