@@ -122,6 +122,7 @@ export interface DanmakuItem {
   guardLevel?: number;  // 0=无, 1=总督, 2=提督, 3=舰长
   medalLevel?: number;
   medalName?: string;
+  timeline?: string;    // "2024-01-01 12:00:00" 直播弹幕时间戳
 }
 
 export interface LiveRoom {

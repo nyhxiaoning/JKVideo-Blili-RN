@@ -36,7 +36,7 @@ export default function LiveDetailScreen() {
 
   // Use actual roomid from room detail (not the short/alias ID from the URL)
   const actualRoomId = room?.roomid ?? id;
-  const danmakus = useLiveDanmaku(isLive ? actualRoomId : 0);
+  const { danmakus, giftCounts } = useLiveDanmaku(isLive ? actualRoomId : 0);
   return (
     <SafeAreaView style={styles.safe}>
       {/* TopBar */}
@@ -156,6 +156,7 @@ export default function LiveDetailScreen() {
             style={[styles.danmakuFull, tab !== "danmaku" && styles.hidden]}
             hideHeader
             maxItems={500}
+            giftCounts={giftCounts}
           />
         </>
       )}

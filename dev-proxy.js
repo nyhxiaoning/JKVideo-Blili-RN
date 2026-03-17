@@ -1,6 +1,8 @@
+const http  = require('http');
 const https = require('https');
-const zlib = require('zlib');
+const zlib  = require('zlib');
 const express = require('express');
+const WsLib = require('ws');
 const app = express();
 
 // CORS: allow any local origin (Expo web dev server)
@@ -103,5 +105,30 @@ app.use('/bilibili-img', (req, res) => {
   makeProxy(host)(req, res);
 });
 
-const PORT = process.env.PROXY_PORT || 3001;
-app.listen(PORT, () => console.log(`[Proxy] http://localhost:${PORT}`));
+const PORT   = process.env.PROXY_PORT || 3001;
+const server = http.createServer(app);
+
+// WebSocket relay — Android Expo Go often can't reach *.chat.bilibili.com directly.
+// Device connects here; proxy opens the upstream WSS connection and relays all frames.
+const wss = new WsLib.Server({ server, path: '/bilibili-danmaku-ws' });
+wss.on('connection', (clientWs, req) => {
+  const url    = new URL(req.url, `http://localhost:${PORT}`);
+  const target = url.searchParams.get('host');
+  if (!target || !target.includes('bilibili.com')) {
+    clientWs.close(4001, 'invalid target');
+    return;
+  }
+  console.log('[ws-relay] →', target);
+  const upstream = new WsLib(target, { headers: { Origin: 'https://live.bilibili.com' }, perMessageDeflate: false });
+  upstream.on('open',    ()    => console.log('[ws-relay] upstream open'));
+  upstream.on('message', data  => { if (clientWs.readyState === 1) clientWs.send(data, { binary: true }); });
+  upstream.on('error',   err   => { console.error('[ws-relay] upstream error:', err.message); clientWs.close(); });
+  upstream.on('close',   ()    => clientWs.close());
+  clientWs.on('message', data  => { if (upstream.readyState === 1) upstream.send(data); });
+  clientWs.on('close',   ()    => upstream.close());
+  clientWs.on('error',   ()    => upstream.close());
+});
+
+server.listen(PORT, '0.0.0.0', () =>
+  console.log(`[Proxy] http://localhost:${PORT}  ws://<LAN-IP>:${PORT}/bilibili-danmaku-ws`)
+);

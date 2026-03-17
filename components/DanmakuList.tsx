@@ -8,6 +8,7 @@ import {
   Animated,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { DanmakuItem } from "../services/types";
@@ -21,6 +22,7 @@ interface Props {
   style?: object | object[];
   hideHeader?: boolean;
   maxItems?: number;
+  giftCounts?: Record<string, number>;
 }
 
 interface DisplayedDanmaku extends DanmakuItem {
@@ -34,10 +36,36 @@ const FAST_DRIP_INTERVAL = 100;
 const QUEUE_FAST_THRESHOLD = 50;
 const SEEK_THRESHOLD = 2;
 
+// ─── 常见礼物 ──────────────────────────────────────────────────────────────────
+const COMMON_GIFTS = [
+  { name: "辣条",   icon: "🌶️", price: "1 银瓜子" },
+  { name: "小心心", icon: "💗", price: "5 银瓜子" },
+  { name: "打call",  icon: "📣", price: "500 银瓜子" },
+  { name: "干杯",   icon: "🍻", price: "1 电池" },
+  { name: "比心",   icon: "💕", price: "10 金瓜子" },
+  { name: "吃瓜",   icon: "🍉", price: "100 金瓜子" },
+  { name: "花式夸夸", icon: "🌸", price: "1000 金瓜子" },
+  { name: "告白气球", icon: "🎈", price: "5200 金瓜子" },
+  { name: "小电视飞船", icon: "🚀", price: "1245 电池" },
+];
+
+// ─── 舰长等级 ───────────────────────────────────────────────────────────────────
+const GUARD_LABELS: Record<number, { text: string; color: string }> = {
+  1: { text: "总督", color: "#E13979" },
+  2: { text: "提督", color: "#7B68EE" },
+  3: { text: "舰长", color: "#00D1F1" },
+};
+
 function formatTimestamp(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatLiveTime(timeline?: string): string {
+  if (!timeline) return "";
+  const parts = timeline.split(" ");
+  return parts[1]?.slice(0, 5) ?? ""; // "HH:MM"
 }
 
 export default function DanmakuList({
@@ -48,6 +76,7 @@ export default function DanmakuList({
   style,
   hideHeader,
   maxItems = 100,
+  giftCounts,
 }: Props) {
   const flatListRef = useRef<FlatList>(null);
   const [displayedItems, setDisplayedItems] = useState<DisplayedDanmaku[]>([]);
@@ -60,27 +89,46 @@ export default function DanmakuList({
   const isAtBottomRef = useRef(true);
   const danmakusRef = useRef(danmakus);
 
-  // Reset everything when danmakus array reference changes (video switch)
+  // Detect changes in the danmakus array
   useEffect(() => {
-    if (danmakusRef.current !== danmakus) {
-      danmakusRef.current = danmakus;
+    const prev = danmakusRef.current;
+    if (prev === danmakus) return;
+    danmakusRef.current = danmakus;
+
+    if (danmakus.length === 0) {
       queueRef.current = [];
       processedIndexRef.current = 0;
       lastTimeRef.current = 0;
       setDisplayedItems([]);
       setUnseenCount(0);
       isAtBottomRef.current = true;
+      return;
     }
-  }, [danmakus]);
 
-  // Watch currentTime, enqueue new danmakus
+    if (hideHeader) {
+      const newStart = processedIndexRef.current;
+      if (danmakus.length > newStart) {
+        queueRef.current.push(...danmakus.slice(newStart));
+        processedIndexRef.current = danmakus.length;
+      }
+      return;
+    }
+
+    queueRef.current = [];
+    processedIndexRef.current = 0;
+    lastTimeRef.current = 0;
+    setDisplayedItems([]);
+    setUnseenCount(0);
+    isAtBottomRef.current = true;
+  }, [danmakus, hideHeader]);
+
+  // Watch currentTime — only used in video mode
   useEffect(() => {
-    if (!visible || danmakus.length === 0) return;
+    if (!visible || danmakus.length === 0 || hideHeader) return;
 
     const prevTime = lastTimeRef.current;
     lastTimeRef.current = currentTime;
 
-    // Seek detection
     if (Math.abs(currentTime - prevTime) > SEEK_THRESHOLD) {
       queueRef.current = [];
       processedIndexRef.current = 0;
@@ -88,9 +136,7 @@ export default function DanmakuList({
       setUnseenCount(0);
       isAtBottomRef.current = true;
 
-      // Re-enqueue danmakus up to current time
       const catchUp = danmakus.filter((d) => d.time <= currentTime);
-      // Only enqueue recent ones to avoid flooding
       const tail = catchUp.slice(-20);
       queueRef.current = tail;
       processedIndexRef.current = danmakus.findIndex(
@@ -102,17 +148,16 @@ export default function DanmakuList({
       return;
     }
 
-    // Normal progression: enqueue danmakus between prevTime and currentTime
-    const sorted = danmakus; // assumed sorted by time
+    const sorted = danmakus;
     let i = processedIndexRef.current;
     while (i < sorted.length && sorted[i].time <= currentTime) {
       queueRef.current.push(sorted[i]);
       i++;
     }
     processedIndexRef.current = i;
-  }, [currentTime, danmakus, visible]);
+  }, [currentTime, danmakus, visible, hideHeader]);
 
-  // Drip interval: pop from queue, append to displayed
+  // Drip interval
   useEffect(() => {
     if (!visible) return;
 
@@ -136,14 +181,12 @@ export default function DanmakuList({
 
         setDisplayedItems((prev) => {
           const next = [...prev, displayed];
-          // 超出上限时批量裁剪到一半，减少频繁截断导致的抖动
           return next.length > maxItems
             ? next.slice(-Math.floor(maxItems / 2))
             : next;
         });
 
         if (isAtBottomRef.current) {
-          // Auto-scroll on next frame
           requestAnimationFrame(() => {
             flatListRef.current?.scrollToEnd({ animated: true });
           });
@@ -165,9 +208,7 @@ export default function DanmakuList({
       const distanceFromBottom =
         contentSize.height - layoutMeasurement.height - contentOffset.y;
       isAtBottomRef.current = distanceFromBottom < 40;
-      if (isAtBottomRef.current) {
-        setUnseenCount(0);
-      }
+      if (isAtBottomRef.current) setUnseenCount(0);
     },
     [],
   );
@@ -182,54 +223,59 @@ export default function DanmakuList({
     isAtBottomRef.current = true;
   }, []);
 
-  const renderItem = useCallback(({ item }: { item: DisplayedDanmaku }) => {
-    const dotColor = danmakuColorToCss(item.color);
+  // ─── Live mode render (B站-style chat) ─────────────────────────────────────
+  const renderLiveItem = useCallback(({ item }: { item: DisplayedDanmaku }) => {
+    const guard = item.guardLevel ? GUARD_LABELS[item.guardLevel] : null;
+    const timeStr = formatLiveTime(item.timeline);
     return (
-      <Animated.View style={[styles.bubble, { opacity: item._fadeAnim }]}>
-        {!hideHeader && (
-          <View style={[styles.colorDot, { backgroundColor: dotColor }]} />
-        )}
-        <View style={styles.bubbleContent}>
-          {item.uname && (
-            <View style={styles.userRow}>
-              {item.isAdmin && (
-                <View style={[styles.badge, styles.badgeAdmin]}>
-                  <Text style={styles.badgeText}>房管</Text>
-                </View>
-              )}
-              {item.guardLevel === 1 && (
-                <View style={[styles.badge, styles.badgeGuard1]}>
-                  <Text style={styles.badgeText}>总督</Text>
-                </View>
-              )}
-              {item.guardLevel === 2 && (
-                <View style={[styles.badge, styles.badgeGuard2]}>
-                  <Text style={styles.badgeText}>提督</Text>
-                </View>
-              )}
-              {item.guardLevel === 3 && (
-                <View style={[styles.badge, styles.badgeGuard3]}>
-                  <Text style={styles.badgeText}>舰长</Text>
-                </View>
-              )}
-              {item.medalLevel != null && (
-                <View style={styles.medal}>
-                  <Text style={styles.medalText}>{item.medalName} {item.medalLevel}</Text>
-                </View>
-              )}
-              <Text style={styles.uname}>{item.uname}</Text>
+      <Animated.View style={[liveStyles.row, { opacity: item._fadeAnim }]}>
+        {timeStr ? (
+          <Text style={liveStyles.time}>{timeStr}</Text>
+        ) : null}
+        <View style={liveStyles.msgBody}>
+          {guard && (
+            <View style={[liveStyles.guardTag, { backgroundColor: guard.color }]}>
+              <Text style={liveStyles.guardTagText}>{guard.text}</Text>
             </View>
           )}
-          <Text style={styles.bubbleText} numberOfLines={3}>
+          {item.isAdmin && (
+            <View style={[liveStyles.guardTag, { backgroundColor: "#e53935" }]}>
+              <Text style={liveStyles.guardTagText}>房管</Text>
+            </View>
+          )}
+          {item.medalLevel != null && item.medalName && (
+            <View style={liveStyles.medalTag}>
+              <Text style={liveStyles.medalName}>{item.medalName}</Text>
+              <View style={liveStyles.medalLvBox}>
+                <Text style={liveStyles.medalLv}>{item.medalLevel}</Text>
+              </View>
+            </View>
+          )}
+          <Text style={liveStyles.uname} numberOfLines={1}>
+            {item.uname ?? "匿名"}
+          </Text>
+          <Text style={liveStyles.colon}>：</Text>
+          <Text style={liveStyles.text} numberOfLines={2}>
             {item.text}
           </Text>
         </View>
-        {!hideHeader && (
-          <Text style={styles.timestamp}>{formatTimestamp(item.time)}</Text>
-        )}
       </Animated.View>
     );
-  }, [hideHeader]);
+  }, []);
+
+  // ─── Video mode render (original bubble) ───────────────────────────────────
+  const renderVideoItem = useCallback(({ item }: { item: DisplayedDanmaku }) => {
+    const dotColor = danmakuColorToCss(item.color);
+    return (
+      <Animated.View style={[styles.bubble, { opacity: item._fadeAnim }]}>
+        <View style={[styles.colorDot, { backgroundColor: dotColor }]} />
+        <Text style={styles.bubbleText} numberOfLines={3}>
+          {item.text}
+        </Text>
+        <Text style={styles.timestamp}>{formatTimestamp(item.time)}</Text>
+      </Animated.View>
+    );
+  }, []);
 
   const keyExtractor = useCallback(
     (item: DisplayedDanmaku) => String(item._key),
@@ -266,9 +312,9 @@ export default function DanmakuList({
             ref={flatListRef}
             data={displayedItems}
             keyExtractor={keyExtractor}
-            renderItem={renderItem}
-            style={styles.list}
-            contentContainerStyle={styles.listContent}
+            renderItem={hideHeader ? renderLiveItem : renderVideoItem}
+            style={hideHeader ? liveStyles.list : styles.list}
+            contentContainerStyle={hideHeader ? liveStyles.listContent : styles.listContent}
             onScroll={handleScroll}
             onScrollBeginDrag={handleScrollBeginDrag}
             scrollEventThrottle={16}
@@ -290,10 +336,40 @@ export default function DanmakuList({
           )}
         </View>
       )}
+
+      {/* 常见礼物栏 — 仅直播模式显示 */}
+      {hideHeader && visible && (
+        <View style={giftStyles.bar}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={giftStyles.scroll}
+          >
+            {COMMON_GIFTS.map((g) => {
+              const count = giftCounts?.[g.name] ?? 0;
+              return (
+                <TouchableOpacity key={g.name} style={giftStyles.item} activeOpacity={0.7}>
+                  <View style={giftStyles.iconWrap}>
+                    {count > 0 && (
+                      <View style={giftStyles.badge}>
+                        <Text style={giftStyles.badgeText}>+{count}</Text>
+                      </View>
+                    )}
+                    <Text style={giftStyles.icon}>{g.icon}</Text>
+                  </View>
+                  <Text style={giftStyles.name} numberOfLines={1}>{g.name}</Text>
+                  <Text style={giftStyles.price}>{g.price}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
     </View>
   );
 }
 
+// ─── Video mode styles ────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     backgroundColor: "#fff",
@@ -342,35 +418,8 @@ const styles = StyleSheet.create({
     marginTop: 6,
     flexShrink: 0,
   },
-  bubbleContent: {
-    flex: 1,
-  },
-  userRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 4,
-    marginBottom: 2,
-  },
-  badge: {
-    borderRadius: 3,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-  },
-  badgeAdmin: { backgroundColor: "#e53935" },
-  badgeGuard1: { backgroundColor: "#9c27b0" },
-  badgeGuard2: { backgroundColor: "#1565c0" },
-  badgeGuard3: { backgroundColor: "#1976d2" },
-  badgeText: { color: "#fff", fontSize: 10, fontWeight: "600" },
-  medal: {
-    borderRadius: 3,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    backgroundColor: "#ff6d9d",
-  },
-  medalText: { color: "#fff", fontSize: 10, fontWeight: "600" },
-  uname: { fontSize: 11, color: "#999" },
   bubbleText: {
+    flex: 1,
     fontSize: 13,
     color: "#333",
     lineHeight: 18,
@@ -400,5 +449,149 @@ const styles = StyleSheet.create({
     color: "#999",
     textAlign: "center",
     paddingVertical: 20,
+  },
+});
+
+// ─── Live mode styles (B站-style chat) ────────────────────────────────────────
+const liveStyles = StyleSheet.create({
+  list: {
+    flex: 1,
+    backgroundColor: "#f9f9fb",
+  },
+  listContent: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    paddingVertical: 5,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#f0f0f2",
+  },
+  time: {
+    fontSize: 10,
+    color: "#c0c0c0",
+    width: 34,
+    marginTop: 2,
+    flexShrink: 0,
+  },
+  msgBody: {
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  guardTag: {
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    marginRight: 4,
+  },
+  guardTagText: {
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: "700",
+  },
+  medalTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 3,
+    borderWidth: 1,
+    borderColor: "#e891ab",
+    overflow: "hidden",
+    marginRight: 4,
+    height: 16,
+  },
+  medalName: {
+    fontSize: 9,
+    color: "#e891ab",
+    paddingHorizontal: 3,
+  },
+  medalLvBox: {
+    backgroundColor: "#e891ab",
+    paddingHorizontal: 3,
+    height: "100%",
+    justifyContent: "center",
+  },
+  medalLv: {
+    fontSize: 9,
+    color: "#fff",
+    fontWeight: "700",
+  },
+  uname: {
+    fontSize: 12,
+    color: "#666",
+    fontWeight: "500",
+    maxWidth: 90,
+  },
+  colon: {
+    fontSize: 12,
+    color: "#666",
+  },
+  text: {
+    fontSize: 13,
+    color: "#212121",
+    lineHeight: 18,
+    flexShrink: 1,
+  },
+});
+
+// ─── Gift bar styles ──────────────────────────────────────────────────────────
+const giftStyles = StyleSheet.create({
+  bar: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#eee",
+    backgroundColor: "#fff",
+    height: 72,
+  },
+  scroll: {
+    paddingHorizontal: 6,
+    alignItems: "center",
+    height: "100%",
+  },
+  item: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 60,
+    paddingVertical: 6,
+  },
+  iconWrap: {
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  badge: {
+    position: "absolute",
+    top: -8,
+    alignSelf: "center",
+    backgroundColor: "#FF6B81",
+    borderRadius: 6,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    zIndex: 1,
+    minWidth: 20,
+    alignItems: "center",
+  },
+  badgeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "700",
+    lineHeight: 13,
+  },
+  icon: {
+    fontSize: 22,
+    lineHeight: 28,
+  },
+  name: {
+    fontSize: 10,
+    color: "#333",
+    fontWeight: "500",
+    marginTop: 2,
+  },
+  price: {
+    fontSize: 9,
+    color: "#aaa",
+    marginTop: 1,
   },
 });

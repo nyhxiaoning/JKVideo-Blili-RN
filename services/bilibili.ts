@@ -337,19 +337,32 @@ export async function searchVideos(keyword: string, page = 1): Promise<VideoItem
     } as VideoItem));
 }
 
-export async function getLiveDanmakuInfo(roomId: number): Promise<{ token: string; host: string }> {
-  const { imgKey, subKey } = await getWbiKeys();
-  const signed = signWbi({ id: roomId, type: 0 }, imgKey, subKey);
-  const res = await api.get(`${LIVE_BASE}/xlive/web-room/v1/index/getDanmuInfo`, {
-    params: signed,
+export async function getLiveDanmakuHistory(roomId: number): Promise<{
+  danmakus: DanmakuItem[];
+  adminMsgs: string[];
+}> {
+  const res = await api.get(`${LIVE_BASE}/xlive/web-room/v1/dM/gethistory`, {
+    params: { roomid: roomId },
   });
-  const data = res.data.data;
-  const hostList: any[] = data?.host_list ?? [];
-  const hostInfo = hostList.find(h => h.wss_port === 443) ?? hostList[0];
-  const host = hostInfo
-    ? `wss://${hostInfo.host}:${hostInfo.wss_port}/sub`
-    : 'wss://broadcastlv.chat.bilibili.com/sub';
-  return { token: data?.token ?? '', host };
+
+  const room: any[] = res.data?.data?.room ?? [];
+  const admin: any[] = res.data?.data?.admin ?? [];
+  const adminMsgs = admin.map((a: any) => a.text ?? '').filter(Boolean);
+  console.log(adminMsgs,'adminMsgs')
+  const danmakus = room.map((m: any) => ({
+    time: 0,
+    mode: 1 as const,
+    fontSize: 25,
+    color: m.text_color ? parseInt(m.text_color.replace('#', ''), 16) : 0xffffff,
+    text: m.text ?? '',
+    uname: m.nickname ?? m.uname,
+    isAdmin: m.isadmin === 1,
+    guardLevel: m.guard_level ?? 0,
+    medalLevel: Array.isArray(m.medal) && m.medal.length > 0 ? m.medal[0] as number : undefined,
+    medalName: Array.isArray(m.medal) && m.medal.length > 1 ? m.medal[1] as string : undefined,
+    timeline: m.timeline as string | undefined,
+  }));
+  return { danmakus, adminMsgs };
 }
 
 export async function getDanmaku(cid: number): Promise<DanmakuItem[]> {
