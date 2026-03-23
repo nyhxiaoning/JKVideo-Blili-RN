@@ -1,27 +1,22 @@
 <div align="center">
-我用 React Native 做了一个功能完整的 B 站客户端，为了规避法律问题，所以具体代码我重新写了一遍。
-从 DASH 解码、弹幕系统到 WBI 签名，一个人把该踩的坑全踩了一遍
+# B 站前端开发工程师被裁员，开源了 B 站 app 源码。请大家支持一下方便俺后续找工作🥹
 
-先看效果
-截图预览
-转存失败，建议直接上传图片文件
-<sub>首页热门 · 内联视频 · 穿插直播</sub>	转存失败，建议直接上传图片文件
-<sub>视频详情 · 简介 · 推荐视频</sub>	转存失败，建议直接上传图片文件
-<sub>竖屏播放 · 4K HDR · 多清晰度</sub>
-转存失败，建议直接上传图片文件
-<sub>下载管理 · 局域网分享二维码</sub>	转存失败，建议直接上传图片文件
-<sub>直播 Tab · 关注主播在线 · 分区筛选</sub>	转存失败，建议直接上传图片文件
-<sub>直播详情 · 实时弹幕 · 舰长标记</sub>
+
 全宽内联视频、飘屏弹幕、实时直播、扫码登录、离线下载……大部分你在官方客户端能用到的核心功能，这个项目基本都有。
 
 跨平台运行，Android / iOS / Web 三端一套代码，Expo Go 扫码 5 分钟就能跑起来，不需要任何编译环境。
 
-为什么做这个
-B 站的开放接口虽然没有官方文档，但社区里已经有大量逆向分析的积累。我想验证一件事：用 React Native 能不能做出一个体验接近原生的视频应用，并且把视频播放、弹幕、直播这些最硬核的部分都做到位。
+## 为什么做这个
+
+
+B 站的开放接口虽然没有官方文档，但社区里已经有大量逆向分析的积累。我想验证一件事： **用 React Native 能不能做出一个体验接近原生的视频应用，并且把视频播放、弹幕、直播这些最硬核的部分都做到位。**
 
 结论是：可以，但需要踩很多坑。
 
-技术架构
+## 技术架构
+
+
+```
 React Native 0.83 + Expo SDK 55
 ├── 路由        expo-router v4 （文件系统路由）
 ├── 状态管理    Zustand
@@ -30,15 +25,20 @@ React Native 0.83 + Expo SDK 55
 ├── 降级播放    react-native-webview （ HTML5 video 注入）
 ├── 页面滑动    react-native-pager-view
 └── 本地存储    @react-native-async-storage/async-storage
-整体是标准的文件系统路由结构，app/ 下每个文件对应一个页面，Stack 导航管理跳转层级。状态全部走 Zustand ，没有用 Redux 那一套，轻量很多。
+```
 
-最硬的部分：DASH 视频播放
+整体是标准的文件系统路由结构， `app/`  下每个文件对应一个页面，Stack 导航管理跳转层级。状态全部走 Zustand ，没有用 Redux 那一套，轻量很多。
+
+## 最硬的部分：DASH 视频播放
+
+
 B 站的高清视频走的是 DASH 协议，服务端返回的是分离的 video stream 和 audio stream ，需要客户端自己做 mux 。
 
-浏览器的 <video> 标签支持 MSE （ Media Source Extensions ），可以直接喂 DASH 数据。但 React Native 里的 react-native-video 底层走的是 Android ExoPlayer ，它需要一个标准的 .mpd 文件才能工作。
+浏览器的  `<video>`  标签支持 MSE （ Media Source Extensions ），可以直接喂 DASH 数据。但 React Native 里的  `react-native-video`  底层走的是 Android ExoPlayer ，它需要一个标准的  `.mpd`  文件才能工作。
 
 B 站接口返回的是 JSON ，不是 MPD ，所以我手写了一个转换器：
 
+```typescript
 // utils/dash.ts
 export function buildDashMpdUri(dashData: DashData): string {
   const videoRep = dashData.video
@@ -70,54 +70,123 @@ export function buildDashMpdUri(dashData: DashData): string {
   // 转成 data URI ，直接喂给 react-native-video
   return `data:application/dash+xml;base64,${btoa(unescape(encodeURIComponent(mpd)))}`;
 }
-生成的 MPD data URI 直接传给 <Video source={{ uri: mpdUri }} />，ExoPlayer 拿到合法的 MPD 就能正确解码 1080P+ / 4K HDR 内容。
+```
 
-WBI 签名：纯 TypeScript 手写 MD5
+生成的 MPD data URI 直接传给  `<Video source={{ uri: mpdUri }} />` ，ExoPlayer 拿到合法的 MPD 就能正确解码 1080P+ / 4K HDR 内容。
+
+## WBI 签名：纯 TypeScript 手写 MD5
+
+
 B 站在 2023 年给核心 API 加了 WBI 签名校验。每次请求需要：
 
-从 /x/web-interface/nav 拉取 img_url 和 sub_url，从路径中提取密钥字符
-按固定顺序重排密钥，取前 32 位拼出 mixin_key
-在请求参数里加入 wts（当前时间戳），用 mixin_key 对参数做 MD5 签名，附上 w_rid
-关键在于 MD5——React Native 环境里没有 Node.js 的 crypto 模块，npm 上的 MD5 库又大多依赖 Buffer ，在 Hermes 引擎上会有兼容问题。
+1. 从  `/x/web-interface/nav`  拉取  `img_url`  和  `sub_url` ，从路径中提取密钥字符
+2. 按固定顺序重排密钥，取前 32 位拼出  `mixin_key`
+3. 在请求参数里加入  `wts` （当前时间戳），用  `mixin_key`  对参数做 MD5 签名，附上  `w_rid`
+
+
+关键在于 MD5——React Native 环境里没有 Node.js 的  `crypto`  模块，npm 上的 MD5 库又大多依赖 Buffer ，在 Hermes 引擎上会有兼容问题。
 
 最终选择自己实现了一个精简版 MD5 ，纯字符串操作，零外部依赖，在所有平台上跑得很稳。nav 接口结果缓存 12 小时，避免频繁请求。
 
-弹幕系统：两套机制，一套界面
-视频弹幕
-通过 /x/v1/dm/list.so 拉取 XML 格式的全量弹幕，解析后得到带时间戳的弹幕列表。播放时按当前进度 drip （逐帧滴入）到飘屏层。
+## 弹幕系统：两套机制，一套界面
 
-飘屏层（DanmakuOverlay）维护 5 条轨道，每条弹幕根据文字长度计算飞行时间，自动选择未被占用的轨道，避免重叠。颜色、字号、舰长标记全部还原。
 
-直播弹幕
+### 视频弹幕
+
+
+通过  `/x/v1/dm/list.so`  拉取 XML 格式的全量弹幕，解析后得到带时间戳的弹幕列表。播放时按当前进度 drip （逐帧滴入）到飘屏层。
+
+飘屏层（ `DanmakuOverlay` ）维护 5 条轨道，每条弹幕根据文字长度计算飞行时间，自动选择未被占用的轨道，避免重叠。颜色、字号、舰长标记全部还原。
+
+### 直播弹幕
+
+
 完全不同的机制——WebSocket 长连接，B 站直播弹幕走的是私有二进制协议（头部 16 字节，含包长度、协议版本、操作码、序列号）。
 
-useLiveDanmaku Hook 处理连接建立、心跳保活（每 30 秒发一次 [object Object] 心跳包）、Zlib 解压和数据包解析。支持普通弹幕、礼物事件、进场通知，舰长弹幕有独立标记和颜色。直播弹幕实时追加，保留最近 500 条。
+`useLiveDanmaku`  Hook 处理连接建立、心跳保活（每 30 秒发一次  `[object Object]`  心跳包）、Zlib 解压和数据包解析。支持普通弹幕、礼物事件、进场通知，舰长弹幕有独立标记和颜色。直播弹幕实时追加，保留最近 500 条。
 
-首页内联视频：BigVideoCard
+## 首页内联视频：BigVideoCard
+
+
 列表里的精选视频直接内联播放，静音自动开始，可见时播放、离屏时暂停。
 
-额外实现了水平手势快进：用 PanResponder 监听水平滑动，每 dx 像素对应一定秒数的快进/快退，滑动时显示浮层时间标签，松手跳转。进度条和缓冲条实时更新，和视频状态完全同步。
+额外实现了水平手势快进：用  `PanResponder`  监听水平滑动，每  `dx`  像素对应一定秒数的快进/快退，滑动时显示浮层时间标签，松手跳转。进度条和缓冲条实时更新，和视频状态完全同步。
 
-全局迷你播放器
+## 全局迷你播放器
+
+
 这是体验细节里比较难做的一个功能。要求是：从视频详情页退出后，底部出现迷你播放器，续播当前视频，不会因为页面卸载而中断。
 
-实现方式：videoStore（ Zustand ）保存当前播放视频的元数据和播放状态，MiniPlayer 组件挂载在根布局 _layout.tsx 里，与路由层级完全解耦。视频详情页卸载时不销毁播放器，只是把控制权交给 MiniPlayer ，播放状态无缝衔接。
+实现方式： `videoStore` （ Zustand ）保存当前播放视频的元数据和播放状态， `MiniPlayer`  组件挂载在根布局  `_layout.tsx`  里，与路由层级完全解耦。视频详情页卸载时不销毁播放器，只是把控制权交给 MiniPlayer ，播放状态无缝衔接。
 
-扫码登录
+## 扫码登录
+
+
 完整实现了 B 站的 OAuth 扫码流程：
 
-调用 generateQRCode() 获取 qrcode_key 和二维码内容
-用第三方二维码渲染服务生成图片展示给用户
-每 2 秒轮询 pollQRCode，监听 code 字段变化
-扫码确认后（code === 0），从响应头的 set-cookie 字段提取 SESSDATA
-写入 AsyncStorage ，后续所有请求自动携带
-登录状态通过 authStore 持久化，App 启动时自动恢复。
+1. 调用  `generateQRCode()`  获取  `qrcode_key`  和二维码内容
+2. 用第三方二维码渲染服务生成图片展示给用户
+3. 每 2 秒轮询  `pollQRCode` ，监听  `code`  字段变化
+4. 扫码确认后（ `code === 0` ），从响应头的  `set-cookie`  字段提取  `SESSDATA`
+5. 写入 AsyncStorage ，后续所有请求自动携带
 
-离线下载 + 局域网分享
+
+登录状态通过  `authStore`  持久化，App 启动时自动恢复。
+
+## 离线下载 + 局域网分享
+
+
 下载功能支持多清晰度选择（ 720P / 1080P / 1080P+），后台队列下载，进度实时显示在导航栏角标。
 
 有一个比较有意思的功能：下载完成后，可以一键启动内置 HTTP 服务器，生成局域网访问二维码。同一 Wi-Fi 下的任意设备扫码，直接在浏览器播放已下载的视频，不需要任何额外 App 。
 
+## 技术栈总结
+
+
+| 层       | 技术选型                        | 理由                          |
+| -------- | ------------------------------- | ----------------------------- |
+| 框架     | React Native 0.83 + Expo SDK 55 | 跨平台，生态成熟              |
+| 路由     | expo-router v4                  | 文件系统路由，类 Next.js 体验 |
+| 状态     | Zustand                         | 轻量，无 boilerplate          |
+| 视频     | react-native-video              | ExoPlayer 底层，支持 DASH/HLS |
+| 弹幕     | 自研                            | 两套协议，一套 UI             |
+| WBI 签名 | 自研纯 TS MD5                   | 零依赖，全平台兼容            |
+| 下载     | 自研队列 + HTTP server          | 支持局域网分享                |
+
+
+## 运行方式
+
+
+**Expo Go （ 5 分钟，无需编译）**
+
+```bash
+git clone https://github.com/tiajinsha/JKVideo.git
+cd JKVideo
+npm install
+npx expo start
+```
+
+用 Expo Go 扫码即可，视频降级为 WebView 方案。
+
+**Dev Build （完整功能，推荐）**
+
+```bash
+npm install
+npx expo run:android
+```
+
+解锁 DASH 原生播放、完整弹幕系统。
+
+**直接安装（ Android ）**  前往  [Releases](https://github.com/tiajinsha/JKVideo/releases/latest)  下载 APK ，安装即用。
+
+## 最后
+
+
+这个项目从零开始大概花了三周，期间踩的最深的坑是 DASH MPD 拼装（ ExoPlayer 对 MPD 格式极为严格，差一个属性就报  `SOURCE_ERROR` ）和直播弹幕的二进制协议解析（官方没有任何文档，全靠抓包逆向）。
+
+整个项目代码完全开源，欢迎 Star 、Fork 、提 Issue 和 PR 。
+
+**GitHub： [https://github.com/tiajinsha/JKVideo
 
 
 <img src="https://img.shields.io/badge/JKVideo-仿B站客户端-00AEEC?style=for-the-badge&logo=bilibili&logoColor=white" alt="JKVideo"/>
