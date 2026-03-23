@@ -1,4 +1,4 @@
-<div align="center">
+
 # B 站前端开发工程师被裁员，开源了 B 站 app 源码。请大家支持一下方便俺后续找工作🥹
 
 
@@ -188,7 +188,7 @@ npx expo run:android
 
 **GitHub： [https://github.com/tiajinsha/JKVideo
 
-
+<div align="center">
 <img src="https://img.shields.io/badge/JKVideo-仿B站客户端-00AEEC?style=for-the-badge&logo=bilibili&logoColor=white" alt="JKVideo"/>
 
 # JKVideo
